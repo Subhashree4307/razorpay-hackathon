@@ -1,0 +1,1 @@
+Created a State for the nodes to share the values across different nodes - > Then created score.py for the calculation of score -> (Assumed the )

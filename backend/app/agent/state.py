@@ -92,3 +92,9 @@ class RecoveryAgentState(TypedDict):
 
     # --- LangGraph LLM Scratchpad ---
     messages: Annotated[List[AnyMessage], add_messages]
+    recovery_score: Optional[int]
+    baseline_probability: Optional[float]
+    score_breakdown: Optional[Dict[str, float]]
+    action_payoffs: Optional[List[Dict[str, Any]]]
+    recommended_action: Optional[NextAction]
+    intervention_cost: Optional[float]
