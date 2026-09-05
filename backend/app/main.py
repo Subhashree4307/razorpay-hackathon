@@ -153,6 +153,33 @@ async def simulate_failure(payload: SimulationRequest):
         "status": "success",
         "data": result,
     }
+
+
+async def mark_payment_recovered(payment_entity: Dict[str, Any], event_id: str) -> int:
+    """Mark the failed event as recovered after Razorpay confirms capture."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Recovery database unavailable")
+
+    payment_id = payment_entity.get("id")
+    failed_payment_id = payment_entity.get("notes", {}).get("failed_payment_id")
+    lookup_ids = [value for value in (payment_id, failed_payment_id) if value]
+    if not lookup_ids:
+        return 0
+
+    result = await db["recovery_events"].update_many(
+        {"payment_id": {"$in": lookup_ids}},
+        {
+            "$set": {
+                "status": "RECOVERED",
+                "recovered_amount": float(payment_entity.get("amount", 0)) / 100.0,
+                "recovered_at": datetime.now(timezone.utc).isoformat(),
+                "recovery_event_id": event_id,
+            }
+        },
+    )
+    return result.modified_count
+
+
 @app.post("/api/webhook/razorpay")
 async def razorpay_webhook(request: Request, background_tasks: BackgroundTasks):
     """
@@ -161,6 +188,14 @@ async def razorpay_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     payload = await request.json()
     event_type = payload.get("event")
+
+    if event_type == "payment.captured":
+        payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+        updated_count = await mark_payment_recovered(payment_entity, payload.get("id", ""))
+        return {
+            "status": "processed",
+            "recovered_events": updated_count,
+        }
 
     # Filter for subscription failure events
     if event_type not in ["payment.failed", "subscription.charged"]:
