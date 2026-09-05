@@ -350,7 +350,8 @@ def compute_scores_node(state: RecoveryAgentState) -> Dict[str, Any]:
     Unified scoring node. Executes all deterministic calculations 
     and updates the state for the LLM agent decision node.
     """
-    recovery_score, score_breakdown = compute_score(state)
+    recovery_score = compute_score(state)
+    score_breakdown = {}
     baseline_probability = compute_baseline_probability(state)
 
     customer = state.get("customer", {})
@@ -382,7 +383,7 @@ def compute_scores_node(state: RecoveryAgentState) -> Dict[str, Any]:
         "score_breakdown": score_breakdown,
         "action_payoffs": payoff_matrix,
         "recommended_action": best_action_data["action"],
-        "recommended_delay": recommended_delay,
+        "retry_delay_hours": recommended_delay,
         "intervention_cost": best_action_data["intervention_cost"],
     }
     

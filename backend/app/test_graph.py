@@ -4,10 +4,9 @@ from pprint import pprint
 import sys
 from pathlib import Path
 
-# Add 'backend' directory to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.agent.graph import recovery_graph
+from backend.app.agent.graph import recovery_graph
 # Scenario 1: Expired Card -> Should trigger SEND_RESCUE_LINK / SEND_PERSONALIZED_MESSAGE
 scenario_expired_card = {
     "event_id": "evt_test_01",

@@ -4,9 +4,10 @@ from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, Field
 from backend.app.agent.state import NextAction, RecoveryAgentState
 from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 load_dotenv()  
-
+import os
 class DecisionOutput(BaseModel):
     chosen_action: NextAction = Field(
         description="The chosen action among: DO_NOTHING, SCHEDULE_RETRY, SEND_RESCUE_LINK, SEND_PERSONALIZED_MESSAGE, ESCALATE_TO_SUPPORT."
@@ -47,7 +48,11 @@ def agent_decision_node(state: RecoveryAgentState)-> Dict[str,Any]:
     confirms the final action, provides plain-English reasoning,
     and drafts personalized customer communication if needed.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2).with_structured_output(DecisionOutput)
+    llm = ChatGroq(
+        model_name="openai/gpt-oss-20b",
+        temperature=0.2,
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+    ).with_structured_output(DecisionOutput)
 
     customer = state.get("customer", {})
     amount_due = state.get("amount_due", 0.0)
@@ -77,7 +82,7 @@ def agent_decision_node(state: RecoveryAgentState)-> Dict[str,Any]:
     - Recovery Propensity Score: {recovery_score}/100
     - Baseline Probability (Passive / DO_NOTHING): {baseline_prob}
     - Top Recommended Action by Math Engine: {recommended}
-    - Recommended Retry Delay: {state.get('recommended_retry_delay_hours')} hours (based on failure type & calendar cycle)
+    - Recommended Retry Delay: {state.get('retry_delay_hours')} hours (based on failure type & calendar cycle)
 
     ### Action Payoff Matrix (Ranked by Expected ROI):
     {payoff_summary}
@@ -87,10 +92,28 @@ def agent_decision_node(state: RecoveryAgentState)-> Dict[str,Any]:
     """
 
     # 3. Invoke LLM
-    decision: DecisionOutput = llm.invoke([
-        SystemMessage(content=SYSTEM_DECISION_PROMPT),
-        HumanMessage(content=user_prompt)
-    ])
+    try:
+        decision: DecisionOutput = llm.invoke([
+            SystemMessage(content=SYSTEM_DECISION_PROMPT),
+            HumanMessage(content=user_prompt)
+        ])
+    except Exception:
+        fallback_action = recommended or "DO_NOTHING"
+        fallback_delay = state.get("retry_delay_hours")
+        fallback_message = None
+        if fallback_action in {"SEND_RESCUE_LINK", "SEND_PERSONALIZED_MESSAGE"}:
+            fallback_message = (
+                "Your subscription payment could not be completed. "
+                "Please update your payment method here: [Payment Link]"
+            )
+        return {
+            "next_action": fallback_action,
+            "agent_reasoning": (
+                "Used the deterministic recovery recommendation because the LLM decision service was unavailable."
+            ),
+            "retry_delay_hours": fallback_delay,
+            "generated_message": fallback_message,
+        }
 
     return {
         "next_action": decision.chosen_action,
