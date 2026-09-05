@@ -65,6 +65,9 @@ async def create_razor_paylink(
         raise RuntimeError(f"Failed to create Razorpay link: {error_details}") from exc
     except httpx.RequestError as exc:
         logger.error(f"Network error communicating with Razorpay: {exc}")
+        if os.getenv("RAZORPAY_LIVE_LINKS", "false").lower() != "true":
+            logger.warning("Using a mock rescue link because RAZORPAY_LIVE_LINKS is not enabled")
+            return f"https://rzp.io/i/mock_rescue_{subscription_id[:8]}"
         raise RuntimeError("Razorpay gateway unreachable") from exc
 # Now we need to build the 3 nodes for the action of the agent 
 async def tool_schedule_retry(state: RecoveryAgentState)-> Dict[str, Any]:

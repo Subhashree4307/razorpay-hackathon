@@ -1,282 +1,321 @@
-Idea of the Problem Statement : 
-An AI agent that, on every failed subscription charge, decides whether to act, what action to take, and how to talk to the customer, then executes a single best intervention (retry, rescue link, or personalized message) to maximize incremental recovered revenue.
+# Recovery Agent
+
+An autonomous revenue-recovery system for failed Razorpay subscription payments.
 
-It’s not just “smart retries”; it’s an autonomous decision‑making agent with a clear policy, tools, and memory.
+Recovery Agent receives a failed-payment event, scores the customer and failure context, asks a Groq-powered decision agent to choose the best intervention, executes that intervention, and stores the decision for merchant review.
 
-How Agentic AI fits in (and what’s new vs. Razorpay)
-Razorpay today gives you:
-Fixed / semi‑smart retry schedules.
-Webhooks (payment.failed, subscription.charged).
-Payment Links API you can call manually or via scripts.
+The project includes:
 
-Your agent adds:
-Per‑event decision making: “Do nothing vs. retry vs. send rescue link vs. escalate.”
-Context‑aware messaging: LLM‑generated, personalized dunning copy based on failure reason, customer value, and history.
-Explicit intervention policy: Only act when expected incremental value exceeds a threshold (aligned with your north‑star metric).
-Judges will see a real “agent” that:
-Observes events.
+- A FastAPI and LangGraph backend
+- A deterministic recovery scoring and payoff engine
+- Groq structured decision-making with `openai/gpt-oss-20b`
+- Razorpay test payment-link generation
+- Retry scheduling and support escalation tools
+- MongoDB persistence for recovery events
+- A light Razorpay-inspired merchant dashboard
+- A `payment.captured` webhook that changes a pending intervention into a confirmed recovery
 
-Thinks (scores, decides).
+> This repository is configured for Razorpay test-mode demonstrations. The simulation endpoint creates representative failure events without charging a real customer.
 
-Acts (calls APIs, sends messages).
+## Problem
 
-Learns (logs outcomes for future decisions).
+Subscription payment failures do not all need the same response. Retrying an expired card wastes attempts, while messaging a customer during a temporary gateway outage creates unnecessary friction. High-value accounts may need human support, and fraud signals should stop automated recovery.
 
-Agent design (simple but convincing)
-1. Trigger
-Razorpay webhook: subscription.charged = failed (or payment.failed for recurring).
+The agent answers three questions for every failed payment:
 
-Your backend normalizes the event into a standard payload:
+1. Should the merchant act at all?
+2. Which single action has the best expected incremental revenue?
+3. Why was that action selected?
 
-subscription_id, customer_id, amount, currency
+Supported actions:
 
-error_code, error_description
+- `DO_NOTHING`
+- `SCHEDULE_RETRY`
+- `SEND_RESCUE_LINK`
+- `SEND_PERSONALIZED_MESSAGE`
+- `ESCALATE_TO_SUPPORT`
 
-attempt_number, plan_name, customer_email/phone
+## Solution
 
-Basic history: past failures, last successful payment date (from your DB).
+The system combines deterministic economics with LLM reasoning:
 
-2. Agent “brain” (LLM + lightweight model)
-You can implement this as a small orchestration service (FastAPI/Next.js + Python/Node) that calls an LLM (e.g., any provider you’re allowed to use in the hackathon).
+1. Normalize the failed payment and customer context.
+2. Calculate a recovery propensity score from failure type, attempt number, tenure, payment history, failure history, and amount.
+3. Estimate baseline recovery probability without intervention.
+4. Calculate expected incremental revenue for every possible action:
 
-Step A – Compute Recovery Propensity Score (0–100)
-Use either:
+   `expected incremental revenue = (action recovery probability - baseline probability) * amount - intervention cost`
 
-A simple rule‑based scorer (fast, demo‑friendly), or
+5. Send the ranked payoff matrix and business policy to Groq.
+6. Validate the structured decision.
+7. Execute one action through the appropriate tool.
+8. Store the decision, reasoning, action history, and outcome in MongoDB.
+9. Mark the event as `RECOVERED` only after a `payment.captured` webhook is received.
 
-A tiny ML model (if you have time) trained on synthetic or historical data.
+## Project Structure
 
-Features:
+```text
+.
+├── backend/
+│   └── app/
+│       ├── main.py                 # FastAPI routes and webhook handlers
+│       ├── schema.py               # Simulation request model
+│       ├── test_graph.py           # Direct agent smoke-test scenarios
+│       └── agent/
+│           ├── decision.py          # Groq structured decision node
+│           ├── execution.py         # Rescue link, retry, and escalation tools
+│           ├── graph.py              # LangGraph orchestration
+│           ├── score.py              # Scoring and payoff calculations
+│           └── state.py              # Agent state and action types
+├── frontend/
+│   ├── src/App.tsx                 # Landing page and dashboard behavior
+│   ├── src/App.css                 # Razorpay-inspired light UI
+│   └── package.json
+├── .env                            # Local secrets; never commit this file
+├── pyproject.toml                  # Python dependencies
+└── README.md
+```
 
-Failure type (soft vs. hard decline).
+## Requirements
 
-Attempt number (1st, 2nd, 3rd+).
+- Python 3.12 or newer
+- Node.js and npm
+- A MongoDB Atlas database or local MongoDB instance
+- A Groq API key
+- Razorpay test credentials for live payment-link API behavior
 
-Customer tenure (days since first successful payment).
+## Environment Variables
 
-ARPU / plan amount.
+Create a `.env` file in the repository root:
 
-Past failure count in last 30/60 days.
+```env
+GROQ_API_KEY=your_groq_api_key
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority
+DATABASE_NAME=razorpay_hackathon
+RAZORPAY_KEY_ID=rzp_test_your_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_test_secret
+```
 
-Output:
+Keep `.env` private. Do not commit API keys, database passwords, or Razorpay secrets.
 
-recovery_score
+For MongoDB Atlas, add the machine's public IP address under **Security -> Network Access**.
 
-baseline_recovery_prob (your estimate of natural recovery without intervention).
+## Installation
 
-Step B – Agent Decision Prompt (LLM)
-Pass structured context to the LLM, e.g.:
+### Backend
 
-You are a Revenue Recovery Agent for a SaaS using Razorpay.
-Input: failed subscription event with fields: {…}.
-Recovery propensity score: 73.
-Baseline recovery probability (no action): 0.45.
-Possible actions:
+From the repository root:
 
-DO_NOTHING
+```powershell
+uv sync
+```
 
-SCHEDULE_RETRY (with suggested delay in hours)
+If the virtual environment already exists and dependencies need to be refreshed:
 
-SEND_RESCUE_LINK (one‑click payment link)
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e .
+```
 
-SEND_PERSONALIZED_MESSAGE (email/WhatsApp with payment link)
+### Frontend
 
-ESCALATE_TO_SUPPORT
+```powershell
+cd frontend
+npm install
+```
 
-Task:
+## Run the Project
 
-Estimate the incremental recovery probability for each action.
+Use two terminals.
 
-Estimate expected incremental revenue = (uplift × amount) − intervention_cost.
+### Terminal 1: Backend
 
-Choose the single best action if expected incremental revenue > threshold; otherwise choose DO_NOTHING.
+Run this from the repository root:
 
-If action involves messaging, draft a short, friendly message (max 3–4 sentences) using the provided customer and subscription details. Do not invent facts.
+```powershell
+$env:PYTHONPATH="$PWD;$PWD\backend"
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
 
-The LLM returns:
+Backend URLs:
 
-chosen_action
+- Health: http://127.0.0.1:8000/api/health
+- Swagger API docs: http://127.0.0.1:8000/docs
+- Recovery records: http://127.0.0.1:8000/api/recoveries
 
-action_params (e.g., retry_delay_hours, channel, message_text)
+### Terminal 2: Frontend
 
-reasoning (1–2 lines you can log/show in the dashboard for demo).
+```powershell
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173
+```
 
-This is your agentic decision layer.
+Open the dashboard at:
 
-3. Agent “tools” (what it can execute)
-Implement these as functions the agent can call:
+http://127.0.0.1:5173/
 
-Create Rescue Payment Link
+## Dashboard Demo Flow
 
-Call Razorpay Payment Links API with:
+1. Open the landing page and select **Open command center**.
+2. In **Live payments**, choose a scenario such as expired card, network error, insufficient funds, or fraud.
+3. Select **Agent to action**.
+4. The request is sent to `POST /api/test/simulate-failure`.
+5. The agent scores the event, calls Groq, selects one action, and returns reasoning.
+6. Open **Execution** to inspect the action, score, reasoning, rescue link, or retry schedule.
+7. Open **History** to view MongoDB-persisted events.
+8. Use a `payment.captured` webhook to confirm a recovery and update the KPIs.
 
-amount, currency
+The dashboard exposes eight demonstration scenarios based on the policy engine:
 
-subscription_id, failed_payment_id in metadata.
+- Expired card -> payment-link or personalized-message intervention
+- Network error -> scheduled retry
+- Card declined -> rescue, message, or escalation based on context
+- Insufficient funds -> delayed retry or empathetic message
+- Incorrect CVC -> payment-link intervention
+- Timeout -> scheduled retry
+- Processing error -> scheduled retry
+- Fraudulent payment -> `DO_NOTHING`
 
-Return short_url.
+## API Reference
 
-Send Message
+### Health
 
-Email (SendGrid/Mailgun) or WhatsApp/Twilio.
+```http
+GET /api/health
+```
 
-Use the LLM‑drafted message, inject the rescue link.
+### Simulate a Failed Payment
 
-Log message_id, channel, sent_at.
+```http
+POST /api/test/simulate-failure
+Content-Type: application/json
+```
 
-Schedule Retry
+Example body:
 
-If you’re using Razorpay Subscriptions, you may not directly control retry timing, but you can:
+```json
+{
+  "plan_name": "Pro Monthly",
+  "amount_due": 4999,
+  "failed_type": "expired_card",
+  "raw_error_code": "EXPIRED_CARD",
+  "current_retry_count": 1,
+  "customer_name": "Arjun Mehta",
+  "customer_email": "arjun@example.com",
+  "customer_phone": "+919876543210",
+  "preferred_channel": "whatsapp",
+  "tenure_days": 120,
+  "successful_payments": 4
+}
+```
 
-Decide whether to let Razorpay’s built‑in retry run, or
+### List Recovery Records
 
-Trigger a new charge attempt via your own logic (if your architecture allows).
+```http
+GET /api/recoveries?limit=50&skip=0
+```
 
-For the hackathon, you can simulate this by:
+### Razorpay Webhook
 
-Storing retry_scheduled_at and showing it in the dashboard.
+```http
+POST /api/webhook/razorpay
+```
 
-Escalate to Support
+The webhook handles:
 
-Create a ticket (e.g., in a simple DB table or a Slack message) with:
+- `payment.failed`
+- `subscription.charged`
+- `payment.captured`
 
-Customer info, failure details, recovery score, agent reasoning.
+A `payment.captured` event updates matching records with:
 
-All actions are logged with:
+```json
+{
+  "status": "RECOVERED",
+  "recovered_amount": 4999,
+  "recovered_at": "2026-09-05T12:00:00+00:00"
+}
+```
 
-event_id, subscription_id, action_taken, agent_reasoning, timestamp.
+## Testing
 
-4. Memory & Learning (lightweight but visible)
-Store each decision + outcome:
+### Agent Graph Smoke Test
 
-When a rescue link is sent, listen to Razorpay webhooks:
+From the repository root:
 
-payment.captured / payment.failed for that link.
+```powershell
+.\.venv\Scripts\python.exe backend\app\test_graph.py
+```
 
-subscription.activated / subscription.cancelled.
+This runs expired-card, network-error, and enterprise-risk scenarios and prints the score, baseline probability, recommendation, chosen action, reasoning, and action history.
 
-Update the record:
+### Backend Syntax Check
 
-outcome: recovered, lost, still_pending.
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q backend\app
+```
 
-time_to_recovery, action_that_worked.
+### Frontend Production Build
 
-In the dashboard, show:
+```powershell
+cd frontend
+npm run build
+```
 
-Recovery rate by chosen action (SEND_RESCUE_LINK, SCHEDULE_RETRY, etc.).
+## Adding Dashboard Screenshots
 
-Average recovery score for recovered vs. lost cases.
+Store screenshots in a new folder:
 
-A simple chart: “Incremental recovery rate with agent vs. baseline (no‑agent simulation).”
+```text
+docs/screenshots/
+├── landing.png
+├── live-payments.png
+├── execution.png
+├── history.png
+└── recovered-kpis.png
+```
 
-This demonstrates the continuous observation and learning loop from your problem statement.
 
-Minimal dashboard (for demo impact)
-A single page with:
+```md
+## Dashboard Screenshots
 
-Top metrics:
+### Landing Page
+![Recovery Agent landing page](docs/screenshots/landing.png)
 
-Total failed subscription amount (last 7 days).
+### Live Payments
+![Live payment scenarios](docs/screenshots/live-payments.png)
 
-Estimated recoverable amount (sum(amount × recovery_score/100)).
+### Agent Execution
+![Agent execution with reasoning](docs/screenshots/execution.png)
 
-Recovered via agent (INR and count).
+### Recovery History
+![Recovery history](docs/screenshots/history.png)
 
-Recent decisions table:
+### Confirmed Recovery KPIs
+![Confirmed recovered payment KPIs](docs/screenshots/recovered-kpis.png)
+```
 
-Customer (masked email/phone).
+The image path is relative to `README.md`, so the files must exist under `docs/screenshots/` in the repository.
 
-Amount, plan, failure reason.
 
-Recovery score.
+## Design Decisions
 
-Action taken (DO_NOTHING, SEND_RESCUE_LINK, etc.).
+- **Deterministic scoring:** keeps the economic calculations transparent and repeatable.
+- **Groq structured output:** adds contextual reasoning and personalized message generation.
+- **LangGraph:** makes the observe -> score -> decide -> act flow explicit.
+- **MongoDB:** stores decisions, action history, and outcomes for merchant visibility.
+- **Test-mode payment links:** demonstrate execution without charging real customers.
+- **Light merchant dashboard:** keeps the interface focused on scanning, action, and auditability.
 
-Outcome (pending, recovered, lost).
+## Future Improvements
 
-“View reasoning” (show LLM’s 1–2 line explanation).
+- Verify Razorpay webhook signatures before processing events.
+- Add idempotency handling for duplicate webhook deliveries.
+- Add background jobs for long-running actions.
+- Add authentication and merchant-level data isolation.
+- Add charts for recovery rate by action and incremental revenue versus baseline.
+- Add real email, WhatsApp, and support-ticket provider integrations.
+- Add an outcome feedback loop to recalibrate affinity and recovery probabilities.
 
-This makes the agent’s behavior transparent and judge‑friendly.
+## License
 
-3‑day build plan (with Agentic AI)
-Day 1
-
-Set up:
-
-Razorpay test account, webhooks endpoint.
-
-DB schema (events, decisions, outcomes).
-
-Implement:
-
-Webhook ingestion + normalization.
-
-Basic recovery propensity scorer (rule‑based).
-
-LLM decision prompt + parser (JSON output).
-
-Day 2
-
-Implement agent tools:
-
-Create Payment Link (Razorpay API).
-
-Send email/WhatsApp with LLM‑drafted message.
-
-Logging of decisions and actions.
-
-Build basic dashboard (list events, scores, actions, outcomes).
-
-Day 3
-
-Wire in outcome tracking:
-
-Handle payment.captured / payment.failed for rescue links.
-
-Update decision records with outcomes.
-
-Add simple analytics:
-
-Recovery rate by action.
-
-“Incremental recovered revenue” metric.
-
-Polish:
-
-Demo flow: trigger a test failure → show agent decision → send message/link → complete payment → show dashboard update.
-
-Prepare a short narrative tying it to your north‑star metric.
-
-Why this is a strong, Agentic AI hackathon project
-It’s clearly agentic:
-
-Perceives events (webhooks).
-
-Reasons (score + LLM decision).
-
-Acts (calls Razorpay + comms APIs).
-
-Learns (logs outcomes, shows analytics).
-
-It’s aligned with your problem statement:
-
-Estimates natural recovery vs. intervention impact.
-
-Chooses the highest‑value intervention.
-
-Stops intervening when uplift is low (DO_NOTHING decisions).
-
-It’s feasible in 3 days:
-
-Core logic is small; complexity is in orchestration, not heavy ML.
-
-You can fake some “learning” with rule‑based scoring and still call it an agent.
-
-If you want, I can next give you:
-
-A concrete DB schema (tables + fields).
-
-A sample LLM prompt template (with exact JSON shape to parse).
-
-A minimal API design (endpoints + request/response examples) to implement this quickly.
-
+This project was created for a Razorpay hackathon demonstration.
