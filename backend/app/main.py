@@ -8,10 +8,46 @@ from app.schema import SimulationRequest
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 import uuid
+import os 
+import logging
+from pymongo.errors import PyMongoError
+from dotenv import load_dotenv
+import certifi
+
+logger = logging.getLogger(__name__)
+load_dotenv()
+MONGODB_URL = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "razorpay_hackathon")
+mongo_client: AsyncIOMotorClient = None
+db: Optional[Any] = None
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global mongo_client, db
+    mongo_client = AsyncIOMotorClient(
+        MONGODB_URL,
+        tlsCAFile=certifi.where(),
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+    )
+    db = mongo_client[DATABASE_NAME]
+
+    try:
+        await db["recovery_events"].create_index("event_id", unique=True)
+        await db["recovery_events"].create_index([("timestamp", -1)])
+    except PyMongoError as exc:
+        logger.warning("MongoDB unavailable; recovery records will not be persisted: %s", exc)
+        db = None
+
+    yield
+
+    if mongo_client:
+        mongo_client.close()
+
 app = FastAPI(
     title= "Autonomous Payment Recovery Agent", 
     description= "Agentic dunning and revenue optimization powered by LangGraph",
-    version= "1.0.0"
+    version= "1.0.0",
+    lifespan=lifespan,
 ) 
 # for the enabling of Cors 
 app.add_middleware(
@@ -19,26 +55,8 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-import os 
-MONGODB_URL = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-DATABASE_NAME = os.getenv("DATABASE_NAME", "razorpay_hackathon")
-mongo_client: AsyncIOMotorClient = None
-db = Optional[AsyncIOMotorClient] = None
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global mongo_client, db
-    mongo_client = AsyncIOMotorClient(MONGODB_URL)
-    db = mongo_client[DATABASE_NAME]
-    
-    await db["recovery_events"].create_index("event_id", unique=True)
-    await db["recovery_events"].create_index([("timestamp", -1)])
-
-    yield
-
-    if mongo_client:
-        mongo_client.close()
 
 async def process_failed_payment(intial_state: RecoveryAgentState)-> Dict[str, Any]:
     # Run the Recovery Graph to determine the next action and reasoning
@@ -63,7 +81,10 @@ async def process_failed_payment(intial_state: RecoveryAgentState)-> Dict[str, A
         "status": final_state.get("outcome", "PENDING"),
     }
     if db is not None:
-        await db["recovery_events"].insert_one(record)
+        try:
+            await db["recovery_events"].insert_one(record)
+        except PyMongoError as exc:
+            logger.warning("Could not persist recovery event %s: %s", record["event_id"], exc)
     record_copy= dict(record)
     record_copy.pop("_id", None)
     return record_copy
@@ -76,7 +97,7 @@ async def health_check():
 async def get_all_recoveries(limit: int = 50, skip: int = 0):
     """Returns all processed recovery events sorted newest first from MongoDB."""
     if db is None:
-        raise HTTPException(status_code=500, detail="Database not initialized")
+        raise HTTPException(status_code=503, detail="Recovery database unavailable")
 
     events_cursor = (
         db["recovery_events"]
